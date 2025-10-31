@@ -33,6 +33,12 @@ interface ColumnConfig {
   type: 'date' | 'title' | 'info' | 'text';
 }
 
+interface AISuggestion {
+  value: string;
+  confidence: number;
+  reason: string;
+}
+
 const detectColumnType = (values: string[]): 'date' | 'title' | 'info' | 'text' => {
   const nonEmpty = values.filter(v => v.trim() !== '');
   if (nonEmpty.length === 0) return 'text';
@@ -48,6 +54,62 @@ const detectColumnType = (values: string[]): 'date' | 'title' | 'info' | 'text' 
   return 'text';
 };
 
+const analyzePatterns = (cells: CellData[], row: number, col: number, currentValue: string): AISuggestion[] => {
+  const suggestions: AISuggestion[] = [];
+  const columnValues = cells.filter(c => c.col === col && c.value.trim() !== '').map(c => c.value);
+  
+  if (currentValue.length < 2) return suggestions;
+
+  const matches = columnValues.filter(v => 
+    v.toLowerCase().startsWith(currentValue.toLowerCase()) && v !== currentValue
+  );
+  
+  const uniqueMatches = Array.from(new Set(matches));
+  uniqueMatches.forEach(match => {
+    const frequency = columnValues.filter(v => v === match).length;
+    suggestions.push({
+      value: match,
+      confidence: Math.min(frequency * 20, 95),
+      reason: frequency > 1 ? `Встречается ${frequency} раз` : 'Похожее значение'
+    });
+  });
+
+  if (row > 0) {
+    const prevRowValue = cells.find(c => c.row === row - 1 && c.col === col)?.value;
+    if (prevRowValue && prevRowValue.trim() !== '' && !suggestions.find(s => s.value === prevRowValue)) {
+      suggestions.push({
+        value: prevRowValue,
+        confidence: 75,
+        reason: 'Значение из строки выше'
+      });
+    }
+  }
+
+  const valueFrequency = new Map<string, number>();
+  columnValues.forEach(v => {
+    valueFrequency.set(v, (valueFrequency.get(v) || 0) + 1);
+  });
+  
+  const mostCommon = Array.from(valueFrequency.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .filter(([value, count]) => 
+      count > 1 && 
+      !suggestions.find(s => s.value === value) &&
+      value.toLowerCase().includes(currentValue.toLowerCase())
+    );
+  
+  mostCommon.forEach(([value, count]) => {
+    suggestions.push({
+      value,
+      confidence: Math.min(count * 15 + 30, 90),
+      reason: `Часто используется (${count}x)`
+    });
+  });
+
+  return suggestions.sort((a, b) => b.confidence - a.confidence).slice(0, 5);
+};
+
 const Index = () => {
   const [cells, setCells] = useState<CellData[]>([]);
   const [columns, setColumns] = useState<ColumnConfig[]>([]);
@@ -55,6 +117,10 @@ const Index = () => {
   const [transcript, setTranscript] = useState('');
   const [selectedCell, setSelectedCell] = useState<{row: number, col: number} | null>(null);
   const [editingColumn, setEditingColumn] = useState<number | null>(null);
+  const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [aiEnabled, setAiEnabled] = useState(true);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
   const { toast } = useToast();
@@ -143,7 +209,7 @@ const Index = () => {
     }
   };
 
-  const updateCell = (row: number, col: number, value: string) => {
+  const updateCell = (row: number, col: number, value: string, skipSuggestions = false) => {
     setCells(prev => 
       prev.map(cell => 
         cell.row === row && cell.col === col 
@@ -151,6 +217,64 @@ const Index = () => {
           : cell
       )
     );
+
+    if (!skipSuggestions && aiEnabled && value.length >= 2) {
+      const newSuggestions = analyzePatterns(cells, row, col, value);
+      setAiSuggestions(newSuggestions);
+      setShowSuggestions(newSuggestions.length > 0);
+      setSelectedSuggestionIndex(0);
+    } else {
+      setShowSuggestions(false);
+      setAiSuggestions([]);
+    }
+  };
+
+  const applySuggestion = (suggestion: AISuggestion) => {
+    if (selectedCell) {
+      updateCell(selectedCell.row, selectedCell.col, suggestion.value, true);
+      setShowSuggestions(false);
+      toast({
+        title: "Применено",
+        description: `${suggestion.reason} (${suggestion.confidence}% уверенности)`,
+      });
+    }
+  };
+
+  const autoFillColumn = (col: number) => {
+    const columnCells = cells.filter(c => c.col === col);
+    const filledCells = columnCells.filter(c => c.value.trim() !== '');
+    const emptyCells = columnCells.filter(c => c.value.trim() === '');
+
+    if (filledCells.length === 0 || emptyCells.length === 0) {
+      toast({
+        title: "Нет данных",
+        description: "Недостаточно данных для автозаполнения",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const valueFrequency = new Map<string, number>();
+    filledCells.forEach(c => {
+      valueFrequency.set(c.value, (valueFrequency.get(c.value) || 0) + 1);
+    });
+
+    const mostCommonValue = Array.from(valueFrequency.entries())
+      .sort((a, b) => b[1] - a[1])[0]?.[0];
+
+    if (mostCommonValue) {
+      setCells(prev => 
+        prev.map(cell => 
+          cell.col === col && cell.value.trim() === ''
+            ? { ...cell, value: mostCommonValue }
+            : cell
+        )
+      );
+      toast({
+        title: "Автозаполнение выполнено",
+        description: `Заполнено ${emptyCells.length} ячеек значением "${mostCommonValue}"`,
+      });
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -244,15 +368,25 @@ const Index = () => {
             <h1 className="text-5xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 bg-clip-text text-transparent mb-2">
               Excel Voice Pro
             </h1>
-            <p className="text-slate-400">Голосовое и визуальное заполнение таблиц</p>
+            <p className="text-slate-400">Голосовое и визуальное заполнение таблиц с ИИ</p>
           </div>
-          <Button
-            onClick={autoDetectColumnTypes}
-            className="bg-gradient-to-r from-purple-500 to-cyan-500 hover:from-purple-600 hover:to-cyan-600"
-          >
-            <Icon name="Sparkles" size={18} className="mr-2" />
-            Авто-определение типов
-          </Button>
+          <div className="flex gap-2 items-center">
+            <Button
+              onClick={() => setAiEnabled(!aiEnabled)}
+              variant={aiEnabled ? "default" : "outline"}
+              className={aiEnabled ? "bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600" : ""}
+            >
+              <Icon name={aiEnabled ? "Sparkles" : "SparklesIcon"} size={18} className="mr-2" />
+              ИИ {aiEnabled ? "ON" : "OFF"}
+            </Button>
+            <Button
+              onClick={autoDetectColumnTypes}
+              className="bg-gradient-to-r from-purple-500 to-cyan-500 hover:from-purple-600 hover:to-cyan-600"
+            >
+              <Icon name="Wand2" size={18} className="mr-2" />
+              Авто-типы
+            </Button>
+          </div>
         </header>
 
         <div className="grid lg:grid-cols-[320px_1fr] gap-6">
@@ -325,6 +459,47 @@ const Index = () => {
                   </div>
                 </TabsContent>
               </Tabs>
+            </Card>
+
+            <Card className="p-6 shadow-2xl border-slate-700 bg-gradient-to-br from-slate-800/80 to-slate-900/80 backdrop-blur">
+              <h3 className="font-semibold text-slate-100 mb-4 flex items-center">
+                <Icon name="Sparkles" size={18} className="mr-2 text-pink-400" />
+                ИИ Помощник
+              </h3>
+              {aiEnabled && aiSuggestions.length > 0 && showSuggestions && (
+                <div className="mb-4 space-y-2">
+                  <p className="text-xs text-slate-400 mb-2">Предложения для выбранной ячейки:</p>
+                  {aiSuggestions.map((suggestion, index) => (
+                    <button
+                      key={index}
+                      onClick={() => applySuggestion(suggestion)}
+                      className={`w-full text-left p-3 rounded-lg border transition-all ${
+                        index === selectedSuggestionIndex
+                          ? 'bg-purple-500/20 border-purple-500'
+                          : 'bg-slate-800/50 border-slate-700 hover:bg-slate-700/50'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-slate-100 font-medium truncate">{suggestion.value}</p>
+                          <p className="text-xs text-slate-400 mt-1">{suggestion.reason}</p>
+                        </div>
+                        <span className="text-xs font-bold text-cyan-400 whitespace-nowrap">
+                          {suggestion.confidence}%
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {aiEnabled && !showSuggestions && (
+                <div className="mb-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                  <p className="text-xs text-slate-400 text-center">
+                    <Icon name="Lightbulb" size={14} className="inline mr-1 text-yellow-400" />
+                    Начните вводить данные для получения подсказок
+                  </p>
+                </div>
+              )}
             </Card>
 
             <Card className="p-6 shadow-2xl border-slate-700 bg-gradient-to-br from-slate-800/80 to-slate-900/80 backdrop-blur">
@@ -420,6 +595,18 @@ const Index = () => {
                                       </SelectItem>
                                     </SelectContent>
                                   </Select>
+                                </div>
+                                <div className="pt-2 border-t border-slate-700">
+                                  <Button
+                                    onClick={() => {
+                                      autoFillColumn(col.index);
+                                      setEditingColumn(null);
+                                    }}
+                                    className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
+                                  >
+                                    <Icon name="Wand2" size={16} className="mr-2" />
+                                    Автозаполнить столбец
+                                  </Button>
                                 </div>
                               </div>
                             </DialogContent>

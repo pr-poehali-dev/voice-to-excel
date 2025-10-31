@@ -165,7 +165,13 @@ const Index = () => {
         const text = event.results[0][0].transcript;
         setTranscript(text);
         if (selectedCell) {
-          updateCell(selectedCell.row, selectedCell.col, text);
+          setCells(prev => 
+            prev.map(cell => 
+              cell.row === selectedCell.row && cell.col === selectedCell.col 
+                ? { ...cell, value: text } 
+                : cell
+            )
+          );
         }
         toast({
           title: "Текст распознан",
@@ -173,10 +179,12 @@ const Index = () => {
         });
       };
 
-      recognitionRef.current.onerror = () => {
+      recognitionRef.current.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
         setIsListening(false);
         toast({
           title: "Ошибка распознавания",
+          description: event.error === 'no-speech' ? 'Речь не обнаружена' : 'Попробуйте ещё раз',
           variant: "destructive",
         });
       };
@@ -185,7 +193,7 @@ const Index = () => {
         setIsListening(false);
       };
     }
-  }, [selectedCell, toast]);
+  }, [selectedCell, toast, cells]);
 
   const startListening = () => {
     if (!selectedCell) {
@@ -196,9 +204,29 @@ const Index = () => {
       return;
     }
     if (recognitionRef.current) {
-      setTranscript('');
-      setIsListening(true);
-      recognitionRef.current.start();
+      try {
+        setTranscript('');
+        setIsListening(true);
+        recognitionRef.current.start();
+        toast({
+          title: "Слушаю...",
+          description: "Говорите сейчас",
+        });
+      } catch (error) {
+        console.error('Error starting recognition:', error);
+        setIsListening(false);
+        toast({
+          title: "Ошибка",
+          description: "Не удалось запустить распознавание",
+          variant: "destructive",
+        });
+      }
+    } else {
+      toast({
+        title: "Не поддерживается",
+        description: "Ваш браузер не поддерживает распознавание речи",
+        variant: "destructive",
+      });
     }
   };
 

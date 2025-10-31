@@ -10,7 +10,7 @@
       }
     },
     {
-      "name": "Should reject non-POST requests",
+      "name": "Should reject GET requests",
       "method": "GET",
       "path": "/",
       "expectedStatus": 405,

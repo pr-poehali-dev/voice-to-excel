@@ -121,6 +121,7 @@ const Index = () => {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
+  const [isProcessingOCR, setIsProcessingOCR] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
   const { toast } = useToast();
@@ -309,10 +310,76 @@ const Index = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (!selectedCell) {
+      toast({
+        title: "Выберите ячейку",
+        description: "Сначала выберите ячейку для вставки текста",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsProcessingOCR(true);
     toast({
-      title: "Загружено",
-      description: "Функция OCR в разработке",
+      title: "Обработка изображения...",
+      description: "ИИ распознаёт текст, подождите",
     });
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const base64Image = event.target?.result as string;
+        
+        try {
+          const response = await fetch('https://functions.poehali.dev/32b98d17-d76f-43cf-85ea-e1d226b5f7f2', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              image: base64Image
+            })
+          });
+
+          const result = await response.json();
+
+          if (response.ok && result.text) {
+            updateCell(selectedCell.row, selectedCell.col, result.text, true);
+            toast({
+              title: "Текст распознан!",
+              description: `Распознано: "${result.text.substring(0, 50)}${result.text.length > 50 ? '...' : ''}"`,
+            });
+          } else {
+            toast({
+              title: "Ошибка распознавания",
+              description: result.error || "Не удалось распознать текст",
+              variant: "destructive"
+            });
+          }
+        } catch (error) {
+          console.error('OCR error:', error);
+          toast({
+            title: "Ошибка сети",
+            description: "Не удалось обработать изображение",
+            variant: "destructive"
+          });
+        } finally {
+          setIsProcessingOCR(false);
+        }
+      };
+
+      reader.readAsDataURL(file);
+    } catch (error) {
+      console.error('File reading error:', error);
+      setIsProcessingOCR(false);
+      toast({
+        title: "Ошибка чтения файла",
+        description: "Не удалось загрузить изображение",
+        variant: "destructive"
+      });
+    }
+
+    e.target.value = '';
   };
 
   const exportToCSV = () => {
@@ -474,17 +541,31 @@ const Index = () => {
                   />
                   <Button
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-full h-16 text-lg font-semibold bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 shadow-lg shadow-cyan-500/50"
+                    className={`w-full h-16 text-lg font-semibold transition-all ${
+                      isProcessingOCR
+                        ? 'bg-gradient-to-r from-orange-500 to-yellow-500 hover:from-orange-600 hover:to-yellow-600 animate-pulse shadow-lg shadow-orange-500/50'
+                        : 'bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 shadow-lg shadow-cyan-500/50'
+                    }`}
+                    disabled={isProcessingOCR}
                   >
-                    <Icon name="Upload" size={24} className="mr-2" />
-                    Загрузить фото
+                    <Icon name={isProcessingOCR ? "Loader2" : "Upload"} size={24} className={`mr-2 ${isProcessingOCR ? 'animate-spin' : ''}`} />
+                    {isProcessingOCR ? 'Обработка...' : 'Загрузить фото'}
                   </Button>
-                  <div className="p-4 bg-yellow-500/10 rounded-lg border border-yellow-500/50">
-                    <p className="text-sm text-yellow-400">
-                      <Icon name="Info" size={16} className="inline mr-1" />
-                      Загрузите фото для распознавания
+                  <div className="p-4 bg-cyan-500/10 rounded-lg border border-cyan-500/50">
+                    <p className="text-sm text-cyan-400">
+                      <Icon name="Sparkles" size={16} className="inline mr-1" />
+                      ИИ распознает рукописный и печатный текст
                     </p>
                   </div>
+                  {selectedCell && (
+                    <div className="p-3 bg-cyan-500/10 rounded-lg border border-cyan-500/50 shadow-lg">
+                      <p className="text-sm text-cyan-400">
+                        Текст будет в ячейке: <span className="font-bold text-cyan-300">
+                          {columns[selectedCell.col]?.name}{selectedCell.row + 1}
+                        </span>
+                      </p>
+                    </div>
+                  )}
                 </TabsContent>
               </Tabs>
             </Card>
